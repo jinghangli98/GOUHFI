@@ -62,6 +62,7 @@ def run_inference(dataset_id, input_dir, output_dir, config, trainer, plan, fold
 
     
     print(f"Running inference with the following command: {' '.join(map(str, inference_command))}")
+
     subprocess.run(inference_command)
     end_time = time.time()
     duration = end_time - start_time
@@ -80,6 +81,7 @@ def apply_post_processing(input_dir, output_dir, pp_pkl_file, np, plans_json):
         "-np", str(np),
         "-plans_json", plans_json
     ]
+    # print(f"Applying post-processing with the following command: {' '.join(post_processing_command)}")
     print(f"Applying post-processing with the following command: {' '.join(map(str, post_processing_command))}")
     subprocess.run(post_processing_command)
     end_time = time.time()
