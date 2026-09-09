@@ -1,0 +1,91 @@
+# syntax=docker/dockerfile:1
+# ============================================================
+# GOUHFI 2.0 — self-contained end-to-end pipeline image (GPU)
+#
+# Differences from the upstream `Dockerfile` (which is kept as-is):
+#   * the model weights in trained_model/ are baked into the image
+#     (no weights volume needed; the image is large, ~30 GB with all 3 models)
+#   * the ANTsPyNet brain-extraction weights are pre-cached (no internet at runtime)
+#   * one-command usage:
+#       docker run --rm --gpus all --shm-size=16g \
+#           -v /data/in:/input -v /data/out:/output gouhfi \
+#           /input/sub-01_T1w.nii.gz /output/sub-01_seg.nii.gz
+#     (see docker/gouhfi_pipeline.sh and DOCKER.md)
+#
+# Build:  ./build_docker.sh            (uses Dockerfile.pipeline.dockerignore)
+# ============================================================
+FROM pytorch/pytorch:2.1.2-cuda12.1-cudnn8-runtime
+
+LABEL description="GOUHFI 2.0 end-to-end pipeline image (model weights included)"
+LABEL version="2.0.1-pipeline"
+
+# System libraries required by TensorFlow (antspynet dependency) and graphviz
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libglib2.0-0 \
+        libsm6 \
+        libxext6 \
+        libxrender1 \
+        graphviz \
+        unzip \
+        wget \
+        curl \
+        gosu \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /opt/gouhfi
+
+ENV GOUHFI_HOME=/opt/gouhfi \
+    PYTHONUNBUFFERED=1 \
+    TF_CPP_MIN_LOG_LEVEL=3 \
+    MPLCONFIGDIR=/tmp \
+    KERAS_HOME=/opt/keras-cache
+
+# ---- 1. Model weights (largest, least frequently changed layers -> first) ----
+# One layer per model (~7.7 GB each) so that docker push/pull retries per model instead of
+# re-uploading one ~23 GB layer.
+#   Dataset020_gouhfi_2p0n2  GOUHFI 2.0 subcortical segmentation   (required)
+#   Dataset024_gouhfi_parc   GOUHFI 2.0 cortical parcellation      (required unless --skip_parc)
+#   Dataset014_gouhfi        GOUHFI 1.0 model, used with --v1      (optional; delete to save ~8 GB)
+COPY trained_model/*.md /opt/gouhfi/trained_model/
+COPY trained_model/Dataset020_gouhfi_2p0n2/ /opt/gouhfi/trained_model/Dataset020_gouhfi_2p0n2/
+COPY trained_model/Dataset024_gouhfi_parc/  /opt/gouhfi/trained_model/Dataset024_gouhfi_parc/
+# Optional model: the *.md anchor guarantees COPY has at least one matching source, so the
+# build succeeds when Dataset014_gouhfi is absent (the stray .md is removed just below).
+COPY trained_model/*.md trained_model/Dataset014_gouhfi* /opt/gouhfi/trained_model/Dataset014_gouhfi/
+RUN set -e; \
+    rm -f /opt/gouhfi/trained_model/Dataset014_gouhfi/*.md; \
+    rmdir /opt/gouhfi/trained_model/Dataset014_gouhfi 2>/dev/null || true; \
+    echo "Models included in the image:"; \
+    for d in /opt/gouhfi/trained_model/Dataset*/; do \
+        ls "$d"/*/plans.json >/dev/null 2>&1 || { echo "ERROR: $d has no <trainer>/plans.json"; exit 1; }; \
+        echo "  $(basename "$d")"; \
+    done
+
+# ---- 2. Source code + Python dependencies ----
+COPY pyproject.toml setup.py README.md LICENSE __init__.py ./
+COPY data_utils/ ./data_utils/
+COPY run_inference/ ./run_inference/
+COPY nnunetv2/ ./nnunetv2/
+COPY misc/ ./misc/
+# "numpy<2": the PyTorch 2.1.2 wheels in the base image were built against NumPy 1.x
+# (upstream pins this in Dockerfile.cpu for the same reason).
+RUN mkdir -p /opt/gouhfi/nnUNet_raw /opt/gouhfi/nnUNet_preprocessed \
+    && pip install --no-cache-dir -e /opt/gouhfi "numpy<2"
+
+# ---- 3. ANTsPyNet brain-extraction weights (t1 + t2), cached for offline use ----
+# Set --build-arg PRECACHE_ANTSPYNET=0 to skip (weights are then fetched on first run).
+ARG PRECACHE_ANTSPYNET=1
+COPY docker/precache_antspynet.py /opt/gouhfi/docker/precache_antspynet.py
+RUN if [ "$PRECACHE_ANTSPYNET" = "1" ]; then python /opt/gouhfi/docker/precache_antspynet.py; fi \
+    && mkdir -p "$KERAS_HOME" && chmod -R a+rwX "$KERAS_HOME"
+
+# ---- 4. Entrypoint ----
+# /entrypoint.sh (upstream) optionally drops privileges to HOST_UID:HOST_GID, then runs
+# gouhfi_pipeline, which turns "<input> <output>" into the full preprocessing ->
+# inference -> reorientation pipeline (or runs any other command, e.g. run_gouhfi --help).
+COPY docker/entrypoint.sh /entrypoint.sh
+COPY docker/gouhfi_pipeline.sh /usr/local/bin/gouhfi_pipeline
+RUN chmod +x /entrypoint.sh /usr/local/bin/gouhfi_pipeline
+
+ENTRYPOINT ["/entrypoint.sh", "gouhfi_pipeline"]
+CMD []

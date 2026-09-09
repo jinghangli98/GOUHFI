@@ -1,0 +1,33 @@
+# Build context for Dockerfile.pipeline (BuildKit picks this file instead of .dockerignore).
+# Unlike the upstream .dockerignore, the model weights in trained_model/ ARE included.
+.git
+.gitignore
+.omc/
+**/__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+gouhfi.egg-info/
+dist/
+build/
+.eggs/
+test_data/
+figs/
+docs/
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+.env
+*.env
+*.ipynb
+.ipynb_checkpoints/
+# weight archives / staging area (only the unpacked Dataset*/ folders are needed)
+trained_model/_downloads/
+trained_model/**/*.zip
+# docker metadata not needed inside the image
+Dockerfile*
+docker-compose.yml
+DOCKER*.md
+build_docker.sh
